@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Accesibilidad infantil</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    html,body{height:100%;margin:0;font-family:Arial,sans-serif}
+    #app{display:grid;grid-template-columns:390px 1fr;height:100%}
+    #panel{background:#1f2937;color:#fff;padding:18px;overflow:auto;box-sizing:border-box}
+    #map{width:100%;height:100%;background:#e5e7eb}
+    h1{margin:0 0 16px;font-size:24px}
+    label{display:block;font-weight:700;margin-bottom:7px}
+    select{width:100%;padding:12px;border-radius:9px;border:1px solid #cbd5e1;font-size:16px;margin-bottom:18px}
+    .legend-title{font-weight:700;margin-bottom:8px}
+    .legend-row{display:flex;align-items:center;gap:10px;margin:8px 0}
+    .swatch{width:30px;height:16px;border-radius:2px;border:1px solid rgba(255,255,255,.25)}
+    .hint{margin-top:18px;color:#d1d5db;line-height:1.4;font-size:14px}
+    .card{margin-top:18px;padding:14px;border-radius:9px;background:#111827}
+    .card h2{margin:0 0 4px;font-size:18px}
+    #coords{color:#cbd5e1;font-size:13px;margin-bottom:10px}
+    .value-row{display:flex;justify-content:space-between;gap:12px;padding:6px 0}
+    .status{margin-top:12px;padding:10px 12px;border-radius:7px;background:#0f172a;color:#cbd5e1;font-size:13px}
+    @media(max-width:780px){
+      #app{grid-template-columns:1fr;grid-template-rows:auto 68vh;height:auto;min-height:100%}
+      #panel{overflow:visible}
+      #map{min-height:68vh}
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+  <aside id="panel">
+    <h1>Accesibilidad infantil</h1>
+
+    <label for="layerSelect">Oportunidad urbana</label>
+    <select id="layerSelect" disabled>
+      <option value="river">River</option>
+      <option value="epa">EPA</option>
+      <option value="zoo">Zoo</option>
+    </select>
+
+    <div class="legend-title">Tiempo caminando (min)</div>
+    <div class="legend-row"><span class="swatch" style="background:#24449a"></span><span>0–15</span></div>
+    <div class="legend-row"><span class="swatch" style="background:#3478d7"></span><span>15–30</span></div>
+    <div class="legend-row"><span class="swatch" style="background:#58b9c6"></span><span>30–45</span></div>
+    <div class="legend-row"><span class="swatch" style="background:#a6ddb3"></span><span>45–60</span></div>
+    <div class="legend-row"><span class="swatch" style="background:#fff7bc"></span><span>60–120</span></div>
+
+    <div class="hint">Haz clic en el mapa para consultar los tres tiempos en ese punto.</div>
+
+    <div class="card">
+      <h2>Punto seleccionado</h2>
+      <div id="coords">Sin seleccionar</div>
+      <div class="value-row"><span>River</span><strong id="riverVal">—</strong></div>
+      <div class="value-row"><span>EPA</span><strong id="epaVal">—</strong></div>
+      <div class="value-row"><span>Zoo</span><strong id="zooVal">—</strong></div>
+    </div>
+
+    <div class="status" id="status">Cargando mapas…</div>
+  </aside>
+
+  <div id="map"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/georaster"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.11.0/proj4.js"></script>
+
+<script>
+(function(){
+  const urls={
+    river:"https://raw.githubusercontent.com/LisMolinaT/Child_15min_Prueba/main/def_3eR_Dual_SubcatOpport_e93c36_1_river_e93bae_P50_C1.dual_COG.tif",
+    epa:"https://raw.githubusercontent.com/LisMolinaT/Child_15min_Prueba/main/def_3eR_Dual_SubcatOpport_e93c36_2_3_epa_e93bcc_P50_C1.dual_COG.tif",
+    zoo:"https://raw.githubusercontent.com/LisMolinaT/Child_15min_Prueba/main/def_3eR_Dual_SubcatOpport_e93c36_5_zoo_e93b9b_P50_C1.dual_COG.tif"
+  };
+
+  proj4.defs("EPSG:3857","+proj=merc +a=6378137 +b=6378137 +lat_ts=0.0 +lon_0=0.0 +x_0=0.0 +y_0=0 +k=1.0 +units=m +nadgrids=@null +wktext +no_defs");
+  proj4.defs("EPSG:4326","+proj=longlat +datum=WGS84 +no_defs");
+
+  const map=L.map("map").setView([-2.90,-78.99],11);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{
+    maxZoom:19,
+    attribution:"&copy; OpenStreetMap contributors"
+  }).addTo(map);
+
+  const rasters={};
+  const overlays={};
+  let activeKey=null;
+  let marker=null;
+
+  function rgbaFor(v){
+    v=Number(v);
+    if(!Number.isFinite(v)) return null;
+    if(v<15) return [36,68,154,180];
+    if(v<30) return [52,120,215,180];
+    if(v<45) return [88,185,198,180];
+    if(v<60) return [166,221,179,180];
+    if(v<120) return [255,247,188,180];
+    return null;
+  }
+
+  function valueAtCell(r,row,col){
+    const band=r.values && r.values[0];
+    if(!band) return null;
+    let v;
+    if(band[row] !== undefined && (Array.isArray(band[row]) || ArrayBuffer.isView(band[row]))){
+      v=Number(band[row][col]);
+    }else{
+      v=Number(band[row*r.width+col]);
+    }
+    return Number.isFinite(v) ? v : null;
+  }
+
+  function rasterCanvasURL(r){
+    const canvas=document.createElement("canvas");
+    canvas.width=r.width;
+    canvas.height=r.height;
+    const ctx=canvas.getContext("2d");
+    const img=ctx.createImageData(r.width,r.height);
+
+    for(let row=0;row<r.height;row++){
+      for(let col=0;col<r.width;col++){
+        const v=valueAtCell(r,row,col);
+        const rgba=rgbaFor(v);
+        const i=(row*r.width+col)*4;
+        if(!rgba){
+          img.data[i+3]=0;
+        }else{
+          img.data[i]=rgba[0];
+          img.data[i+1]=rgba[1];
+          img.data[i+2]=rgba[2];
+          img.data[i+3]=rgba[3];
+        }
+      }
+    }
+
+    ctx.putImageData(img,0,0);
+    return canvas.toDataURL("image/png");
+  }
+
+  function bounds3857ToLeaflet(r){
+    const sw=proj4("EPSG:3857","EPSG:4326",[Number(r.xmin),Number(r.ymin)]);
+    const ne=proj4("EPSG:3857","EPSG:4326",[Number(r.xmax),Number(r.ymax)]);
+    return L.latLngBounds([sw[1],sw[0]],[ne[1],ne[0]]);
+  }
+
+  async function loadRaster(key){
+    const response=await fetch(urls[key],{cache:"no-store"});
+    if(!response.ok) throw new Error(key+" HTTP "+response.status);
+    const buffer=await response.arrayBuffer();
+    const r=await parseGeoraster(buffer);
+    rasters[key]=r;
+
+    const overlay=L.imageOverlay(
+      rasterCanvasURL(r),
+      bounds3857ToLeaflet(r),
+      {opacity:0.72,interactive:false,pane:"overlayPane"}
+    );
+    overlays[key]=overlay;
+  }
+
+  function showOnly(key,fit=false){
+    // Remove ALL three explicitly before adding selected one.
+    for(const k of ["river","epa","zoo"]){
+      if(overlays[k] && map.hasLayer(overlays[k])) map.removeLayer(overlays[k]);
+    }
+
+    activeKey=key;
+    overlays[key].addTo(map);
+
+    if(fit) map.fitBounds(overlays[key].getBounds(),{padding:[20,20]});
+    document.getElementById("status").textContent=
+      "Mostrando únicamente: "+(key==="river"?"River":key.toUpperCase());
+  }
+
+  function valueAt(r,lat,lng){
+    const xy=proj4("EPSG:4326","EPSG:3857",[lng,lat]);
+    const x=xy[0],y=xy[1];
+
+    const xmin=Number(r.xmin),xmax=Number(r.xmax),ymin=Number(r.ymin),ymax=Number(r.ymax);
+    if(x<xmin||x>xmax||y<ymin||y>ymax) return null;
+
+    const col=Math.min(r.width-1,Math.max(0,Math.floor(((x-xmin)/(xmax-xmin))*r.width)));
+    const row=Math.min(r.height-1,Math.max(0,Math.floor(((ymax-y)/(ymax-ymin))*r.height)));
+
+    const v=valueAtCell(r,row,col);
+    if(v===null) return null;
+
+    const nd=r.noDataValue;
+    if(nd!==undefined && nd!==null && v===Number(nd)) return null;
+    if(v>=120) return null;
+    return v;
+  }
+
+  async function init(){
+    const status=document.getElementById("status");
+    const select=document.getElementById("layerSelect");
+
+    try{
+      status.textContent="Cargando River…";
+      await loadRaster("river");
+      status.textContent="Cargando EPA…";
+      await loadRaster("epa");
+      status.textContent="Cargando Zoo…";
+      await loadRaster("zoo");
+
+      showOnly("river",true);
+      select.disabled=false;
+      status.textContent="Listo. Las 3 capas están precargadas.";
+    }catch(err){
+      console.error(err);
+      status.textContent="Error: "+err.message;
+    }
+  }
+
+  document.getElementById("layerSelect").addEventListener("change",e=>{
+    showOnly(e.target.value,false);
+  });
+
+  map.on("click",e=>{
+    const {lat,lng}=e.latlng;
+
+    if(marker) map.removeLayer(marker);
+    marker=L.circleMarker([lat,lng],{
+      radius:6,weight:2,color:"#111827",fillColor:"#fff",fillOpacity:1
+    }).addTo(map);
+
+    document.getElementById("coords").textContent=lat.toFixed(5)+", "+lng.toFixed(5);
+
+    for(const key of ["river","epa","zoo"]){
+      const v=valueAt(rasters[key],lat,lng);
+      document.getElementById(key+"Val").textContent=
+        v===null ? "Sin dato" : v.toFixed(1)+" min";
+    }
+  });
+
+  init();
+})();
+</script>
+</body>
+</html>
