@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Accesibilidad infantil - prueba</title>
+  <link href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css" rel="stylesheet" />
+  <style>
+    html, body { height:100%; margin:0; font-family:Arial,sans-serif; }
+    #app { display:grid; grid-template-columns:320px 1fr; height:100%; }
+    #panel { padding:16px; background:#1f2937; color:white; overflow:auto; }
+    #map { width:100%; height:100%; }
+    h1 { font-size:20px; margin:0 0 14px; }
+    label { display:block; font-weight:700; margin:12px 0 6px; }
+    select { width:100%; padding:10px; font-size:16px; border-radius:8px; }
+    .legend { margin-top:16px; }
+    .legend-row { display:flex; align-items:center; gap:8px; margin:7px 0; }
+    .sw { width:24px; height:14px; border-radius:2px; border:1px solid rgba(255,255,255,.25); }
+    .note { font-size:13px; color:#d1d5db; line-height:1.35; }
+    .result { margin-top:16px; padding:12px; background:#111827; border-radius:8px; }
+    .result-row { display:flex; justify-content:space-between; gap:12px; margin:7px 0; }
+    @media (max-width:760px) {
+      #app { grid-template-columns:1fr; grid-template-rows:auto 65vh; }
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+  <aside id="panel">
+    <h1>Accesibilidad infantil</h1>
+    <label for="layerSelect">Oportunidad urbana</label>
+    <select id="layerSelect">
+      <option value="river">River</option>
+      <option value="epa">EPA</option>
+      <option value="zoo">Zoo</option>
+    </select>
+
+    <div class="legend">
+      <strong>Tiempo caminando (min)</strong>
+      <div class="legend-row"><span class="sw" style="background:#183a8f"></span><span>0–15</span></div>
+      <div class="legend-row"><span class="sw" style="background:#2f6bd5"></span><span>15–30</span></div>
+      <div class="legend-row"><span class="sw" style="background:#58b9c6"></span><span>30–45</span></div>
+      <div class="legend-row"><span class="sw" style="background:#a6ddb3"></span><span>45–60</span></div>
+      <div class="legend-row"><span class="sw" style="background:#fff7bc"></span><span>60–120</span></div>
+    </div>
+
+    <p class="note">Haz clic en el mapa para consultar los tres tiempos en ese punto.</p>
+    <div class="result">
+      <strong>Punto seleccionado</strong>
+      <div class="note" id="coords">Sin seleccionar</div>
+      <div class="result-row"><span>River</span><strong id="riverVal">—</strong></div>
+      <div class="result-row"><span>EPA</span><strong id="epaVal">—</strong></div>
+      <div class="result-row"><span>Zoo</span><strong id="zooVal">—</strong></div>
+    </div>
+  </aside>
+  <main id="map"></main>
+</div>
+
+<script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
+<script type="module">
+import { fromUrl } from "https://cdn.jsdelivr.net/npm/geotiff@2.1.4/+esm";
+
+const urls = {
+  river: "https://raw.githubusercontent.com/LisMolinaT/Child_15min_Prueba/main/def_3eR_Dual_SubcatOpport_e93c36_1_river_e93bae_P50_C1.dual_COG.tif",
+  epa: "https://raw.githubusercontent.com/LisMolinaT/Child_15min_Prueba/main/def_3eR_Dual_SubcatOpport_e93c36_2_3_epa_e93bcc_P50_C1.dual_COG.tif",
+  zoo: "https://raw.githubusercontent.com/LisMolinaT/Child_15min_Prueba/main/def_3eR_Dual_SubcatOpport_e93c36_5_zoo_e93b9b_P50_C1.dual_COG.tif"
+};
+
+const map = new maplibregl.Map({
+  container:"map",
+  style:"https://demotiles.maplibre.org/style.json",
+  center:[-78.99,-2.90],
+  zoom:11
+});
+map.addControl(new maplibregl.NavigationControl(),"top-right");
+
+const tiffs = {};
+async function loadTiff(key){
+  if(!tiffs[key]){
+    const tiff = await fromUrl(urls[key]);
+    tiffs[key] = await tiff.getImage();
+  }
+  return tiffs[key];
+}
+
+async function rasterValue(key,lng,lat){
+  const img = await loadTiff(key);
+  const [minX,minY,maxX,maxY] = img.getBoundingBox();
+  const w = img.getWidth(), h = img.getHeight();
+  if(lng<minX||lng>maxX||lat<minY||lat>maxY) return null;
+  const x = Math.max(0,Math.min(w-1,Math.floor((lng-minX)/(maxX-minX)*w)));
+  const y = Math.max(0,Math.min(h-1,Math.floor((maxY-lat)/(maxY-minY)*h)));
+  const arr = await img.readRasters({window:[x,y,x+1,y+1]});
+  return Number(arr[0][0]);
+}
+
+function colorFor(v){
+  if(v==null||Number.isNaN(v)) return null;
+  if(v<15) return "#183a8f";
+  if(v<30) return "#2f6bd5";
+  if(v<45) return "#58b9c6";
+  if(v<60) return "#a6ddb3";
+  return "#fff7bc";
+}
+
+const overlayId = "selected-raster";
+async function renderSelected(key){
+  const img = await loadTiff(key);
+  const w = img.getWidth(), h = img.getHeight();
+  const scale = Math.max(1,Math.ceil(Math.max(w,h)/700));
+  const outW = Math.ceil(w/scale), outH = Math.ceil(h/scale);
+  const data = await img.readRasters({width:outW,height:outH,resampleMethod:"nearest"});
+  const band = data[0];
+  const canvas = document.createElement("canvas");
+  canvas.width = outW; canvas.height = outH;
+  const ctx = canvas.getContext("2d");
+  const im = ctx.createImageData(outW,outH);
+  for(let i=0;i<band.length;i++){
+    const v = Number(band[i]);
+    const c = colorFor(v);
+    const j = i*4;
+    if(!c || v>=120){ im.data[j+3]=0; continue; }
+    const rgb = c.match(/\w\w/g).map(x=>parseInt(x,16));
+    im.data[j]=rgb[0]; im.data[j+1]=rgb[1]; im.data[j+2]=rgb[2]; im.data[j+3]=175;
+  }
+  ctx.putImageData(im,0,0);
+  const [minX,minY,maxX,maxY] = img.getBoundingBox();
+  const url = canvas.toDataURL("image/png");
+  if(map.getLayer(overlayId)) map.removeLayer(overlayId);
+  if(map.getSource(overlayId)) map.removeSource(overlayId);
+  map.addSource(overlayId,{type:"image",url,coordinates:[[minX,maxY],[maxX,maxY],[maxX,minY],[minX,minY]]});
+  map.addLayer({id:overlayId,type:"raster",source:overlayId,paint:{"raster-opacity":0.72}});
+}
+
+map.on("load",()=>renderSelected("river"));
+document.getElementById("layerSelect").addEventListener("change",e=>renderSelected(e.target.value));
+map.on("click",async e=>{
+  const {lng,lat} = e.lngLat;
+  document.getElementById("coords").textContent = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+  for(const key of ["river","epa","zoo"]){
+    const el = document.getElementById(key+"Val");
+    el.textContent = "leyendo…";
+    try{
+      const v = await rasterValue(key,lng,lat);
+      el.textContent = (v==null||Number.isNaN(v)||v>=120) ? "Sin dato" : `${v.toFixed(1)} min`;
+    }catch(err){ el.textContent = "Error"; }
+  }
+});
+</script>
+</body>
+</html>
